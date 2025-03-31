@@ -1,0 +1,83 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-haproxy-config
+  labels:
+    {{- include "haproxy-sidecar.labels" . | nindent 4 }}
+data:
+  haproxy.cfg: |
+    global
+      log stdout format raw local0 info
+      maxconn 50000
+      user haproxy
+      group haproxy
+
+    defaults
+      mode http
+      log global
+      option httplog
+      timeout connect {{ .Values.haproxy.config.timeouts.connect }}
+      timeout client {{ .Values.haproxy.config.timeouts.client }}
+      timeout server {{ .Values.haproxy.config.timeouts.server }}
+
+    frontend http_front
+      bind *:{{ .Values.haproxy.port }}
+      default_backend app_backend
+      # Capture requests
+      http-request capture req.hdrs len 64000
+      # Capture responses
+      http-response capture res.hdrs len 64000
+      # Log full request/response details
+      option httplog
+      log-format "{{ .Values.haproxy.config.logFormat }}"
+
+    {{- if .Values.haproxy.config.forwardCopies.enabled }}
+    # Load Lua script for forwarding copies
+    lua-load /etc/haproxy/send_copy.lua
+
+    frontend http_front
+      # Add hooks for Lua script to forward copies
+      http-request lua.capture_request
+      http-response lua.capture_response
+    {{- end }}
+      
+    backend app_backend
+      server app 127.0.0.1:{{ .Values.application.port }} maxconn 10000
+
+  {{- if .Values.haproxy.config.forwardCopies.enabled }}
+  send_copy.lua: |
+    local http = require("socket.http")
+    local ltn12 = require("ltn12")
+    local json = require("json")
+    
+    function capture_request(txn)
+      local req = {}
+      req.method = txn.sf:req_meth()
+      req.uri = txn.sf:req_path()
+      req.headers = txn.sf:req_hdrs()
+      req.body = txn.sf:req_body()
+      
+      -- Send to downstream service
+      http.request{
+        url = "{{ .Values.haproxy.config.forwardCopies.downstreamService }}",
+        method = "POST",
+        headers = {["Content-Type"] = "application/json"},
+        source = ltn12.source.string(json.encode(req))
+      }
+    end
+    
+    function capture_response(txn)
+      local res = {}
+      res.status = txn.sf:res_status()
+      res.headers = txn.sf:res_hdrs()
+      res.body = txn.sf:res_body()
+      
+      -- Send to downstream service
+      http.request{
+        url = "{{ .Values.haproxy.config.forwardCopies.downstreamService }}",
+        method = "POST",
+        headers = {["Content-Type"] = "application/json"},
+        source = ltn12.source.string(json.encode(res))
+      }
+    end
+  {{- end }}
