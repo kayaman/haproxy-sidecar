@@ -1,0 +1,55 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}
+  labels:
+    {{- include "haproxy-sidecar.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount | default 1 }}
+  selector:
+    matchLabels:
+      app: {{ .Values.application.name }}
+  template:
+    metadata:
+      labels:
+        app: {{ .Values.application.name }}
+    spec:
+      containers:
+      - name: {{ .Values.application.name }}
+        image: {{ .Values.application.image.repository }}:{{ .Values.application.image.tag }}
+        imagePullPolicy: {{ .Values.application.image.pullPolicy }}
+        ports:
+        - containerPort: {{ .Values.application.port }}
+        resources:
+          {{- toYaml .Values.application.resources | nindent 10 }}
+      
+      - name: haproxy
+        image: {{ .Values.haproxy.image.repository }}:{{ .Values.haproxy.image.tag }}
+        imagePullPolicy: {{ .Values.haproxy.image.pullPolicy }}
+        ports:
+        - containerPort: {{ .Values.haproxy.port }}
+        volumeMounts:
+        - name: haproxy-config
+          mountPath: /usr/local/etc/haproxy/haproxy.cfg
+          subPath: haproxy.cfg
+        {{- if .Values.haproxy.config.forwardCopies.enabled }}
+        - name: haproxy-config
+          mountPath: /etc/haproxy/send_copy.lua
+          subPath: send_copy.lua
+        {{- end }}
+        resources:
+          {{- toYaml .Values.haproxy.resources | nindent 10 }}
+      
+      {{- if .Values.logForwarder.enabled }}
+      - name: log-forwarder
+        image: {{ .Values.logForwarder.image.repository }}:{{ .Values.logForwarder.image.tag }}
+        imagePullPolicy: {{ .Values.logForwarder.image.pullPolicy }}
+        resources:
+          {{- toYaml .Values.logForwarder.resources | nindent 10 }}
+        # Configure log forwarder as needed
+      {{- end }}
+      
+      volumes:
+      - name: haproxy-config
+        configMap:
+          name: {{ .Release.Name }}-haproxy-config
